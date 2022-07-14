@@ -13,16 +13,10 @@
 #include <istream>
 #include <opencv2/imgcodecs.hpp>  // imread
 #include <opencv2/imgproc.hpp>    // threashold
-/*
-#ifndef XTENSOR_FOUND
-#define XTENSOR_FOUND 0
-#endif
-*/
+
 // Conditionallly include xtensor if package found
-//#if XTENSOR_FOUND
 #include <xtensor/xarray.hpp>
 #include <xtensor/xnpy.hpp>
-//#endif
 
 namespace sv {
 
