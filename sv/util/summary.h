@@ -5,7 +5,7 @@
 
 #include <shared_mutex>
 #include <string_view>
-
+#include <mutex>
 #include "sv/util/stats.h"
 #include "sv/util/timer.h"
 

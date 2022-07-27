@@ -1,7 +1,6 @@
 #include "sv/util/summary.h"
 
 #include <fmt/ostream.h>
-
 #include "sv/util/logging.h"
 
 namespace sv {
