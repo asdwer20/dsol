@@ -2,6 +2,7 @@
 #include <geometry_msgs/TransformStamped.h>
 #include <ros/ros.h>
 #include <rosgraph_msgs/Clock.h>
+#include <tf2_ros/transform_listener.h>
 #include <tf2_ros/transform_broadcaster.h>
 #include "sv/dsol/extra.h"
 #include "sv/dsol/node_util.h"
@@ -9,13 +10,19 @@
 #include "sv/util/dataset.h"
 #include "sv/util/logging.h"
 #include "sv/util/ocv.h"
-//#include <cv.h>
+#include "sv/util/eigen.h"
 #include "sensor_msgs/Image.h"
+#include "sensor_msgs/Imu.h"
 #include <cv_bridge/cv_bridge.h>
 #include <message_filters/subscriber.h>
 #include <message_filters/time_synchronizer.h>
 #include <message_filters/sync_policies/approximate_time.h>
 #include <message_filters/sync_policies/exact_time.h>
+#include <nav_msgs/Odometry.h>
+#include <tf/transform_datatypes.h>
+#include <tf/transform_listener.h>
+#include <tf/transform_broadcaster.h>
+#include <Eigen/Dense>
 
 namespace sv::dsol {
 
@@ -23,6 +30,7 @@ using SE3d = Sophus::SE3d;
 namespace gm = geometry_msgs;
 namespace sm = sensor_msgs;
 namespace vm = visualization_msgs;
+namespace nm = nav_msgs;
 
 struct NodeData {
   explicit NodeData(const ros::NodeHandle& pnh);
@@ -34,11 +42,13 @@ struct NodeData {
   void PublishCloud(const std_msgs::Header& header) const;
   void SendTransform(const gm::PoseStamped& pose_msg,
                      const std::string& child_frame);
-  void ImageCallback(const sensor_msgs::ImageConstPtr& msgLeft,
-                     const sensor_msgs::ImageConstPtr& msgRight);
-  void DoubleImageCallback(const sensor_msgs::ImageConstPtr& image1, const sensor_msgs::ImageConstPtr& image2);
-  void Run(cv_bridge::CvImageConstPtr cv_ptrLeft,
-           cv_bridge::CvImageConstPtr cv_ptrRight, const ros::Time timestamp);
+  void imuCallback(const sm::ImuConstPtr& imu);
+  void odomCallback(const nm::OdometryConstPtr& enc);
+  void ImageCallback(const sensor_msgs::ImageConstPtr& msgLeft, const sensor_msgs::ImageConstPtr& msgRight);
+  void Callback(const sensor_msgs::ImageConstPtr& msgLeft, const sensor_msgs::ImageConstPtr& msgRight, const sm::ImageConstPtr& msgDepth);
+  void Run(cv_bridge::CvImageConstPtr cv_ptrLeft, cv_bridge::CvImageConstPtr cv_ptrRight,
+           const ros::Time timestamp, cv_bridge::CvImageConstPtr cv_ptrDepth = {});
+  void getPrediction(double& pred_x, double& pred_y, double& pred_z, double& pred_a);
 
   double data_max_depth_{0};
   double cloud_max_depth_{100};
@@ -62,20 +72,42 @@ struct NodeData {
 
   ros::Publisher points_pub_;
 
+  ros::Subscriber imu_sub_;
+  ros::Subscriber enc_sub_;
+
   ros::Time current_frame_time_;
 
+  sm::Imu curr_imu_msg_;
+  sm::Imu prev_imu_msg_;
+  nm::Odometry curr_enc_msg_;
+  nm::Odometry prev_enc_msg_;
 
-  typedef message_filters::sync_policies::ApproximateTime<sensor_msgs::Image, sensor_msgs::Image> sync_pol;
-  //typedef message_filters::sync_policies::ExactTime<sensor_msgs::Image, sensor_msgs::Image> sync_pol;
+  bool use_depth;
+  
+
+  message_filters::Subscriber<sensor_msgs::Image> *depth_sub_;
+
+  // With Depth
+  typedef message_filters::sync_policies::ExactTime<sensor_msgs::Image, sensor_msgs::Image, sensor_msgs::Image> sync_pol_depth;
+  message_filters::Synchronizer<sync_pol_depth> *sync_depth_;
+
+  // Without Depth
+  typedef message_filters::sync_policies::ExactTime<sensor_msgs::Image, sensor_msgs::Image> sync_pol;
   message_filters::Subscriber<sensor_msgs::Image> *left_sub_;
   message_filters::Subscriber<sensor_msgs::Image> *right_sub_;
   message_filters::Synchronizer<sync_pol> *sync_;
+
 
   double prev_time {-1};
   int flag {0};
   int cnt {0};
   int buff_count {1};
 
+  bool use_imu;
+  bool use_odom;
+  
+  bool received_imu {false};
+  bool received_odom {false};
 
   bool init_tf{false};
   // The default SE(3) matrix is Identity for Sophus objects
@@ -106,8 +138,48 @@ NodeData::NodeData(const ros::NodeHandle& pnh) : pnh_{pnh} {
   ROS_INFO_STREAM("motion_alpha: " << motion_.alpha());
 }
 
+void NodeData::imuCallback(const sm::ImuConstPtr& msgImu) {
+  curr_imu_msg_ = *msgImu;
 
-void NodeData::ImageCallback(const sensor_msgs::ImageConstPtr& msgLeft, const sensor_msgs::ImageConstPtr& msgRight /*, const sensor_msgs::ImageConstPtr& msgDepth*/) {
+  if (!received_imu) {
+    prev_imu_msg_ = *msgImu;
+    received_imu = true;
+  }
+}
+
+void NodeData::odomCallback(const nm::OdometryConstPtr& msgEnc) {
+  curr_enc_msg_ = *msgEnc;
+
+  if (!received_odom) {
+    prev_enc_msg_ = *msgEnc;
+    received_odom = true;
+  }
+}
+
+void NodeData::getPrediction(double& pred_x, double& pred_y, double& pred_z, double& pred_a) {
+  pred_x = 0.0;
+  pred_y = 0.0;
+  pred_z = 0.0;
+  pred_a = 0.0;
+
+  if (use_odom && received_odom) {
+    pred_x = curr_enc_msg_.pose.pose.position.x - prev_enc_msg_.pose.pose.position.x;
+    pred_y = curr_enc_msg_.pose.pose.position.y - prev_enc_msg_.pose.pose.position.y;
+    pred_z = curr_enc_msg_.pose.pose.position.z - prev_enc_msg_.pose.pose.position.z;
+    prev_enc_msg_ = curr_enc_msg_;
+  }
+
+  if (use_imu && received_imu) {
+    pred_a = tf::getYaw(curr_imu_msg_.orientation) - tf::getYaw(prev_imu_msg_.orientation);
+
+    if      (pred_a >= M_PI) pred_a -= 2.0 * M_PI;
+    else if (pred_a < -M_PI) pred_a += 2.0 * M_PI;    
+    
+    prev_imu_msg_ = curr_imu_msg_;
+  }
+}
+
+void NodeData::ImageCallback(const sensor_msgs::ImageConstPtr& msgLeft, const sensor_msgs::ImageConstPtr& msgRight) {
   cv_bridge::CvImageConstPtr cv_ptrLeft;
   try {
       cv_ptrLeft = cv_bridge::toCvShare(msgLeft);
@@ -125,18 +197,50 @@ void NodeData::ImageCallback(const sensor_msgs::ImageConstPtr& msgLeft, const se
   }
 
   Run(cv_ptrLeft, cv_ptrRight, cv_ptrLeft->header.stamp);
-}  
+}
 
-void SingleImageCallback(const sensor_msgs::ImageConstPtr& image){
-  ROS_INFO_STREAM("Received an image in left camera");
-  return;
+void NodeData::Callback(const sensor_msgs::ImageConstPtr& msgLeft, const sensor_msgs::ImageConstPtr& msgRight, const sensor_msgs::ImageConstPtr& msgDepth) {
+    cv_bridge::CvImageConstPtr cv_ptrLeft;
+  try {
+      cv_ptrLeft = cv_bridge::toCvShare(msgLeft);
+  } catch (cv_bridge::Exception& e) {
+      ROS_ERROR("cv_bridge exception: %s", e.what());
+      return;
+  }
+
+  cv_bridge::CvImageConstPtr cv_ptrRight;
+  try {
+      cv_ptrRight = cv_bridge::toCvShare(msgRight);
+  } catch (cv_bridge::Exception& e) {
+      ROS_ERROR("cv_bridge exception: %s", e.what());
+      return;
+  }
+
+  cv_bridge::CvImageConstPtr cv_ptrDepth;
+  try {
+      cv_ptrDepth = cv_bridge::toCvShare(msgDepth);
+  } catch (cv_bridge::Exception& e) {
+      ROS_ERROR("cv_bridge exception: %s", e.what());
+      return;
+  }  
+
+  Run(cv_ptrLeft, cv_ptrRight, cv_ptrLeft->header.stamp, cv_ptrDepth);
 }
-void NodeData::DoubleImageCallback(const sensor_msgs::ImageConstPtr& image1, const sensor_msgs::ImageConstPtr& image2){
-  ROS_INFO_STREAM("Received 2 images in both cameras");
-  return;
-}
+
+// void SingleImageCallback(const sensor_msgs::ImageConstPtr& image){
+//   ROS_INFO_STREAM("Received an image in left camera");
+//   return;
+// }
+// void NodeData::DoubleImageCallback(const sensor_msgs::ImageConstPtr& image1, const sensor_msgs::ImageConstPtr& image2){
+//   ROS_INFO_STREAM("Received 2 images in both cameras");
+//   return;
+// }
 
 void NodeData::InitRosIO() {
+
+  pnh_.getParam("use_imu", use_imu);
+  pnh_.getParam("use_odom", use_odom);
+
   clock_pub_ = pnh_.advertise<rosgraph_msgs::Clock>("/clock", 1);
 
   kf_pub_ = PosePathPublisher(pnh_, "kf", frame_);
@@ -150,16 +254,25 @@ void NodeData::InitRosIO() {
   right_sub_ = new message_filters::Subscriber<sensor_msgs::Image> (pnh_,
       pnh_.param<std::string>("cam2_data", "/Image2/data"), pnh_.param<int>("buff_count", 1));
 
-  // depth_sub_ = new message_filters::Subscriber<sensor_msgs::Image> (pnh_, "depth/image_rect_raw", 1);
-  
-  sync_ = new message_filters::Synchronizer<sync_pol> (sync_pol(10), *left_sub_, *right_sub_);
-  // sync_ = new message_filters::Synchronizer<sync_pol> (sync_pol(10), *left_sub_, *right_sub_, *depth_sub);
+  if (use_depth) {
+    depth_sub_ = new message_filters::Subscriber<sensor_msgs::Image> (pnh_,
+        pnh_.param<std::string>("depth_data", "/Depth/data"), pnh_.param<int>("buff_count", 1));
+    sync_depth_ = new message_filters::Synchronizer<sync_pol_depth> (sync_pol_depth(10), *left_sub_, *right_sub_, *depth_sub_);
+    sync_depth_->registerCallback(boost::bind(&NodeData::Callback, this, _1, _2, _3));
+  }
+  else {
+    sync_ = new message_filters::Synchronizer<sync_pol> (sync_pol(10), *left_sub_, *right_sub_);
+    sync_->registerCallback(boost::bind(&NodeData::ImageCallback, this, _1, _2));
+  }
 
-  //sync_->registerCallback(boost::bind(&NodeData::DoubleImageCallback, this, _1, _2));
-  sync_->registerCallback(boost::bind(&NodeData::ImageCallback, this, _1, _2));
-   //sync_->registerCallback(boost::bind(&NodeData::ImageCallback, this, _1, _2, _3));
+  if (use_imu) {
+    imu_sub_ = pnh_.subscribe(pnh_.param<std::string>("imu_data", "/imu/data"), pnh_.param<int>("buff_count", 1), &NodeData::imuCallback, this);
+  }
 
-  //pnh_.getParam("freq", freq_);
+  if (use_odom) {
+    enc_sub_ = pnh_.subscribe(pnh_.param<std::string>("enc_data", "/vesc/odom"), pnh_.param<int>("buff_count", 1), &NodeData::odomCallback, this);  
+  }
+
   pnh_.getParam("data_max_depth", data_max_depth_);
   pnh_.getParam("cloud_max_depth", cloud_max_depth_);
 
@@ -211,9 +324,12 @@ void NodeData::SendTransform(const geometry_msgs::PoseStamped& pose_msg,
   tfbr_.sendTransform(tf_msg);
 }
 
-void NodeData::Run(cv_bridge::CvImageConstPtr cv_ptrLeft, cv_bridge::CvImageConstPtr cv_ptrRight, const ros::Time timestamp) {
+void NodeData::Run(cv_bridge::CvImageConstPtr cv_ptrLeft, cv_bridge::CvImageConstPtr cv_ptrRight, const ros::Time timestamp, cv_bridge::CvImageConstPtr cv_ptrDepth) {
   double dt;
   double timestamp_sec = timestamp.toSec();
+
+  double pred_x, pred_y, pred_z, pred_a;
+  getPrediction(pred_x, pred_y, pred_z, pred_a);
 
   if(prev_time < 0){
     motion_.Init(T_c0_c_gt);
@@ -224,7 +340,16 @@ void NodeData::Run(cv_bridge::CvImageConstPtr cv_ptrLeft, cv_bridge::CvImageCons
   else{
     dt = timestamp_sec - prev_time;
     prev_time = timestamp_sec;
-    dT_pred = motion_.PredictDelta(dt);
+    // dT_pred = motion_.PredictDelta(dt);
+    if (use_imu) {
+      const Eigen::Vector3d& pos_ {pred_x, pred_y, pred_z};
+      const Eigen::Matrix3d R_ = Eigen::AngleAxisd(pred_a * dt, Eigen::Vector3d(0, 0, 1)).toRotationMatrix();
+      dT_pred = {R_, pos_};
+    }
+    else {
+      dT_pred = motion_.PredictDelta(dt);
+    }
+
     flag = 0;
   }
 
@@ -254,7 +379,16 @@ void NodeData::Run(cv_bridge::CvImageConstPtr cv_ptrLeft, cv_bridge::CvImageCons
   }
 
   // Odom
-  const auto status = odom_.Estimate(image_l, image_r, dT_pred);
+  OdomStatus status;
+
+  if (use_depth) {
+    auto image_depth = cv_ptrDepth->image;
+    status = odom_.Estimate(image_l, image_r, dT_pred, image_depth);
+  }
+  else {
+    status = odom_.Estimate(image_l, image_r, dT_pred);
+  }
+
   ROS_INFO_STREAM(status.Repr());
 
   // Motion model correct if tracking is ok and not first frame
