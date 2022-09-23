@@ -49,6 +49,7 @@ struct NodeData {
   void Run(cv_bridge::CvImageConstPtr cv_ptrLeft, cv_bridge::CvImageConstPtr cv_ptrRight,
            const ros::Time timestamp, cv_bridge::CvImageConstPtr cv_ptrDepth = {});
   void getPrediction(double& pred_x, double& pred_y, double& pred_z, double& pred_a);
+  void camInfoCallback(const sm::CameraInfo& cinfo);
 
   double data_max_depth_{0};
   double cloud_max_depth_{100};
@@ -74,6 +75,7 @@ struct NodeData {
 
   ros::Subscriber imu_sub_;
   ros::Subscriber enc_sub_;
+  ros::Subscriber cinfo_sub_;
 
   ros::Time current_frame_time_;
 
@@ -122,6 +124,8 @@ NodeData::NodeData(const ros::NodeHandle& pnh) : pnh_{pnh} {
 
   InitRosIO();
   InitOdom();
+
+  // Not required - delete later (ctrl_, waiter_, motion_ statements)
   // Wait after key_control
   const int wait_ms = pnh_.param<int>("wait_ms", 0);
   ROS_INFO_STREAM("wait_ms: " << wait_ms);
@@ -137,6 +141,12 @@ NodeData::NodeData(const ros::NodeHandle& pnh) : pnh_{pnh} {
   motion_ = MotionModel(alpha);
   ROS_INFO_STREAM("motion_alpha: " << motion_.alpha());
 }
+
+void NodeData::camInfoCallback(const sm::CameraInfo& msgCInfo) {
+  odom_.camera = MakeCamera(msgCInfo);
+  cinfo_sub_.shutdown();
+}
+
 
 void NodeData::imuCallback(const sm::ImuConstPtr& msgImu) {
   curr_imu_msg_ = *msgImu;
@@ -240,8 +250,11 @@ void NodeData::InitRosIO() {
 
   pnh_.getParam("use_imu", use_imu);
   pnh_.getParam("use_odom", use_odom);
+  pnh_.getParam("use_depth", use_depth);
 
   clock_pub_ = pnh_.advertise<rosgraph_msgs::Clock>("/clock", 1);
+
+  cinfo_sub_ = pnh_.subscribe(pnh_.param<std::string>("camera_info", "/camera/infra2/camera_info"), pnh_.param<int>("buff_count", 1), &NodeData::camInfoCallback, this);
 
   kf_pub_ = PosePathPublisher(pnh_, "kf", frame_);
   odom_pub_ = PosePathPublisher(pnh_, "odom", frame_);
@@ -250,13 +263,13 @@ void NodeData::InitRosIO() {
   align_marker_pub_ = pnh_.advertise<vm::Marker>("align_graph", 1);
 
   left_sub_ = new message_filters::Subscriber<sensor_msgs::Image> (pnh_,
-      pnh_.param<std::string>("cam1_data", "/Image1/data"), pnh_.param<int>("buff_count", 1));
+      pnh_.param<std::string>("cam1_data", "/Image1/data"), pnh_.param<int>("buff_count", 5));
   right_sub_ = new message_filters::Subscriber<sensor_msgs::Image> (pnh_,
-      pnh_.param<std::string>("cam2_data", "/Image2/data"), pnh_.param<int>("buff_count", 1));
+      pnh_.param<std::string>("cam2_data", "/Image2/data"), pnh_.param<int>("buff_count", 5));
+  depth_sub_ = new message_filters::Subscriber<sensor_msgs::Image> (pnh_,
+      pnh_.param<std::string>("depth_data", "/Depth/data"), pnh_.param<int>("buff_count", 5));
 
   if (use_depth) {
-    depth_sub_ = new message_filters::Subscriber<sensor_msgs::Image> (pnh_,
-        pnh_.param<std::string>("depth_data", "/Depth/data"), pnh_.param<int>("buff_count", 1));
     sync_depth_ = new message_filters::Synchronizer<sync_pol_depth> (sync_pol_depth(10), *left_sub_, *right_sub_, *depth_sub_);
     sync_depth_->registerCallback(boost::bind(&NodeData::Callback, this, _1, _2, _3));
   }
@@ -266,19 +279,19 @@ void NodeData::InitRosIO() {
   }
 
   if (use_imu) {
-    imu_sub_ = pnh_.subscribe(pnh_.param<std::string>("imu_data", "/imu/data"), pnh_.param<int>("buff_count", 1), &NodeData::imuCallback, this);
+    imu_sub_ = pnh_.subscribe(pnh_.param<std::string>("imu_data", "/imu/data"), pnh_.param<int>("buff_count", 50), &NodeData::imuCallback, this);
   }
 
   if (use_odom) {
-    enc_sub_ = pnh_.subscribe(pnh_.param<std::string>("enc_data", "/vesc/odom"), pnh_.param<int>("buff_count", 1), &NodeData::odomCallback, this);  
+    enc_sub_ = pnh_.subscribe(pnh_.param<std::string>("enc_data", "/vesc/odom"), pnh_.param<int>("buff_count", 50), &NodeData::odomCallback, this);  
   }
 
   pnh_.getParam("data_max_depth", data_max_depth_);
   pnh_.getParam("cloud_max_depth", cloud_max_depth_);
 
-  intrin = (cv::Mat_<double>(1,5) << pnh_.param<double>("fx",0), pnh_.param<double>("fy",
-        0),pnh_.param<double>("cx",0),pnh_.param<double>("cy",0),pnh_.param<double>("bs",0));
-  ROS_INFO_STREAM("intrinsics: "<<intrin);
+  // intrin = (cv::Mat_<double>(1,5) << pnh_.param<double>("fx",0), pnh_.param<double>("fy",
+  //       0),pnh_.param<double>("cx",0),pnh_.param<double>("cy",0),pnh_.param<double>("bs",0));
+  // ROS_INFO_STREAM("intrinsics: "<<intrin);
 }
 
 void NodeData::InitOdom() {
@@ -355,9 +368,10 @@ void NodeData::Run(cv_bridge::CvImageConstPtr cv_ptrLeft, cv_bridge::CvImageCons
 
   auto image_l = cv_ptrLeft->image;
   auto image_r = cv_ptrRight->image;
+  cv::Mat image_depth;
 
   // Intrinsic
-  if (!odom_.camera.Ok()){
+  // if (!odom_.camera.Ok()){
   // These are for the ERL Realsense camera. On second thought, the order is wrong I believe
   //const cv::Mat intrin({1, 5}, {380.4, 312.9, 379.9, 247.2, 0.095});
 
@@ -372,22 +386,21 @@ void NodeData::Run(cv_bridge::CvImageConstPtr cv_ptrLeft, cv_bridge::CvImageCons
   //[347.99755859375, 0.0, 320.0, 0.0, 347.99755859375, 240.0, 0.0, 0.0, 1.0]
   //const cv::Mat intrin({1, 5}, {347.99755859375, 347.99755859375, 320.0, 240.0, 0.05});
 
-  ROS_INFO_STREAM("intrinsics: "<<intrin);
-  const auto camera = Camera::FromMat({image_l.cols, image_l.rows}, intrin);
-  odom_.SetCamera(camera);
-  ROS_INFO_STREAM(camera);
-  }
+  // ROS_INFO_STREAM("intrinsics: "<<intrin);
+  // const auto camera = Camera::FromMat({image_l.cols, image_l.rows}, intrin);
+  // odom_.SetCamera(camera);
+  // ROS_INFO_STREAM(camera);
+  // }
 
   // Odom
   OdomStatus status;
 
   if (use_depth) {
-    auto image_depth = cv_ptrDepth->image;
-    status = odom_.Estimate(image_l, image_r, dT_pred, image_depth);
+    image_depth = cv_ptrDepth->image;
+    image_depth.convertTo(image_depth, CV_32FC1, 0.001);
   }
-  else {
-    status = odom_.Estimate(image_l, image_r, dT_pred);
-  }
+    
+  status = odom_.Estimate(image_l, image_r, dT_pred, image_depth);
 
   ROS_INFO_STREAM(status.Repr());
 

@@ -45,6 +45,7 @@
     <arg name="cam1_data" default="/camera/infra1/image_rect_raw"/>
     <arg name="cam2_data" default="/camera/infra2/image_rect_raw"/>
     <arg name="depth_data" default="/camera/depth/image_rect_raw" />
+    <arg name="camera_info" default="/camera/infra2/camera_info" />
     <arg name="imu_data" default="/imu/data" />
     <arg name="enc_data" default="/vesc/odom" />
     <arg name="fix_frame" default="fixed"/>
@@ -82,6 +83,7 @@
         <param name="depth_data" type="str" value="$(arg depth_data)"/>
         <param name="imu_data" type="str" value="$(arg imu_data)"/>
         <param name="enc_data" type="str" value="$(arg enc_data)"/>
+        <param name="camera_info" type="str" value="$(arg camera_info)" />
 
         <param name="use_imu" type="bool" value="true" />
         <param name="use_odom" type="bool" value="true" />

@@ -66,20 +66,37 @@ OdomCfg ReadOdomCfg(const ros::NodeHandle& pnh) {
   return cfg;
 }
 
+// Camera MakeCamera(const sensor_msgs::CameraInfo& cinfo_msg) {
+//   const cv::Size size(cinfo_msg.width, cinfo_msg.height);
+//   const auto& K = cinfo_msg.K;
+//   // K
+//   // 0, 1, 2
+//   // 3, 4, 5
+//   // 6, 7, 8
+//   Eigen::Array4d fc;
+//   fc << K[0], K[4], K[2], K[5];
+//   // P
+//   // 0, 1,  2,  3
+//   // 4, 5,  6,  7
+//   // 8, 9, 10, 11
+//   return {size, fc, cinfo_msg.P[3] / K[0]};
+// }
+
 Camera MakeCamera(const sensor_msgs::CameraInfo& cinfo_msg) {
   const cv::Size size(cinfo_msg.width, cinfo_msg.height);
-  const auto& K = cinfo_msg.K;
+  const auto& P = cinfo_msg.P;
+  CHECK_GT(P[0], 0);
   // K
   // 0, 1, 2
   // 3, 4, 5
   // 6, 7, 8
   Eigen::Array4d fc;
-  fc << K[0], K[4], K[2], K[5];
+  fc << P[0], P[5], P[2], P[6];
   // P
   // 0, 1,  2,  3
   // 4, 5,  6,  7
   // 8, 9, 10, 11
-  return {size, fc, cinfo_msg.P[3] / K[0]};
+  return {size, fc, -P[3] / P[0]};
 }
 
 void Keyframe2CloudCameraFrame(const Keyframe& keyframe,
