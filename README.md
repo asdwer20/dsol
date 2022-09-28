@@ -1,5 +1,17 @@
 # 🛢️ DSOL: Direct Sparse Odometry Lite
 
+## Build Directions for ERL
+
+1. Recursively clone erl_car_localization repository in your catkin workspace.
+
+2. Run Catkin build with Release version.
+
+All the missing dependencies are built simultaneously with catkin cmake. These include abseil, fmt, glog, xtl, xtensor.
+
+## Run Instructions for ERL
+
+Use dsol_ros to run realtime using data from ros topic, and dsol_data to run on datasets. Check the launch file to see the configurable parameters; topic names, camera intrinsics, frame names can be modified here.
+
 ## Reference
 
 Chao Qu, Shreyas S. Shivakumar, Ian D. Miller, Camillo J. Taylor
