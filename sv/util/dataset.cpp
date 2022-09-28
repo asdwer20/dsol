@@ -14,7 +14,7 @@
 #include <opencv2/imgcodecs.hpp>  // imread
 #include <opencv2/imgproc.hpp>    // threashold
 
-// Conditionallly include xtensor if package found
+// XTL, Xtensor have been added to repo. Hence can include unconditionally
 #include <xtensor/xarray.hpp>
 #include <xtensor/xnpy.hpp>
 

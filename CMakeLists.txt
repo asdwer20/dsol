@@ -31,14 +31,15 @@ find_package(
              visualization_msgs)
 
 find_package(TBB REQUIRED)
-#find_package(fmt REQUIRED)
-#find_package(glog REQUIRED)
-#find_package(absl REQUIRED)
 find_package(Boost REQUIRED) # circular buffer
 
 find_package(Eigen3 REQUIRED)
 find_package(Sophus REQUIRED)
 find_package(OpenCV REQUIRED)
+
+#find_package(fmt REQUIRED)
+#find_package(glog REQUIRED)
+#find_package(absl REQUIRED)
 #find_package(xtensor) # reading npy
 
 find_package(GTest REQUIRED)
@@ -57,4 +58,6 @@ enable_testing()
 add_subdirectory(../abseil-cpp absl) 
 add_subdirectory(../fmt fmt)
 add_subdirectory(../glog glog)
+add_subdirectory(../xtl xtl)
+add_subdirectory(../xtensor xtensor)
 add_subdirectory(sv)
