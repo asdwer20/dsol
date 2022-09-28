@@ -1,8 +1,7 @@
 <launch>
 
   <!-- Launch dsol ros node -->  
-    <include file="dsol_ros.launch">
-    </include>
+  <include file="$(find dsol)/launch/dsol_ros.launch"/>
 
     <!--Launch the Octomap-->
     <node pkg="octomap_server" type="octomap_server_node" name="octomap_server">
