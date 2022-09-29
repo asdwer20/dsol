@@ -1,3 +1,4 @@
+<?xml version="1.0" encoding="utf-8"?>
 <launch>
 
   <!--Use below when running on actual car. Don't need to use it with rosbag-->
