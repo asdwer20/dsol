@@ -355,8 +355,9 @@ void NodeData::Run(cv_bridge::CvImageConstPtr cv_ptrLeft, cv_bridge::CvImageCons
     prev_time = timestamp_sec;
     // dT_pred = motion_.PredictDelta(dt);
     if (use_imu) {
-      const Eigen::Vector3d& pos_ {pred_x, pred_y, pred_z};
-      const Eigen::Matrix3d R_ = Eigen::AngleAxisd(pred_a * dt, Eigen::Vector3d(0, 0, 1)).toRotationMatrix();
+      // const Eigen::Vector3d& pos_ {pred_x, pred_y, pred_z};
+      const Eigen::Vector3d& pos_ {-pred_y, 0, pred_x};     // (-y, -z, x)
+      const Eigen::Matrix3d R_ = Eigen::AngleAxisd(-pred_a, Eigen::Vector3d(0, 1, 0)).toRotationMatrix();   // negative twist on y or pos twist on neg y
       dT_pred = {R_, pos_};
     }
     else {
@@ -453,6 +454,7 @@ void NodeData::PublishOdom(const std_msgs::Header& header,
 
 int main(int argc, char** argv) {
   ros::init(argc, argv, "dsol_data");
+  cv::setNumThreads(4);
   sv::dsol::NodeData node{ros::NodeHandle{"~"}};
   ros::spin();
   return 0;
